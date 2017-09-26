@@ -14,7 +14,7 @@ import bodyParser from 'body-parser';
 import expressJwt, { UnauthorizedError as Jwt401Error } from 'express-jwt';
 import expressGraphQL from 'express-graphql';
 import jwt from 'jsonwebtoken';
-import fetch from 'node-fetch';
+import nodeFetch from 'node-fetch';
 import React from 'react';
 import ReactDOM from 'react-dom/server';
 import PrettyError from 'pretty-error';
@@ -28,6 +28,8 @@ import router from './router';
 import models from './data/models';
 import schema from './data/schema';
 import assets from './assets.json'; // eslint-disable-line import/no-unresolved
+import configureStore from './store/configureStore';
+import { setRuntimeVariable } from './actions/runtime';
 import config from './config';
 
 const app = express();
@@ -114,6 +116,28 @@ app.get('*', async (req, res, next) => {
   try {
     const css = new Set();
 
+    // Universal HTTP client
+    const fetch = createFetch(nodeFetch, {
+      baseUrl: config.api.serverUrl,
+      cookie: req.headers.cookie,
+    });
+
+    const initialState = {
+      user: req.user || null,
+    };
+
+    const store = configureStore(initialState, {
+      fetch,
+      // I should not use `history` on server.. but how I do redirection? follow universal-router
+    });
+
+    store.dispatch(
+      setRuntimeVariable({
+        name: 'initialNow',
+        value: Date.now(),
+      }),
+    );
+
     // Global (context) variables that can be easily accessed from any React component
     // https://facebook.github.io/react/docs/context.html
     const context = {
@@ -123,11 +147,10 @@ app.get('*', async (req, res, next) => {
         // eslint-disable-next-line no-underscore-dangle
         styles.forEach(style => css.add(style._getCss()));
       },
-      // Universal HTTP client
-      fetch: createFetch(fetch, {
-        baseUrl: config.api.serverUrl,
-        cookie: req.headers.cookie,
-      }),
+      fetch,
+      // You can access redux through react-redux connect
+      store,
+      storeSubscription: null,
     };
 
     const route = await router.resolve({
@@ -143,7 +166,7 @@ app.get('*', async (req, res, next) => {
 
     const data = { ...route };
     data.children = ReactDOM.renderToString(
-      <App context={context}>
+      <App context={context} store={store}>
         {route.component}
       </App>,
     );
@@ -155,6 +178,7 @@ app.get('*', async (req, res, next) => {
     data.scripts.push(assets.client.js);
     data.app = {
       apiUrl: config.api.clientUrl,
+      state: context.store.getState(),
     };
 
     const html = ReactDOM.renderToStaticMarkup(<Html {...data} />);
